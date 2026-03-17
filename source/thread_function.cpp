@@ -1,6 +1,6 @@
 #include "thread_function.h"
 #include <random>
-
+#include <filesystem>
 
 void thread_simulated_annealing_function(std::vector<Task>& tasks,int thread_id) {
     
@@ -82,14 +82,28 @@ void thread_simulated_annealing_function(std::vector<Task>& tasks,int thread_id)
         }
     }
 
-    // --- ZAPIS DO PLIKU INDYWIDUALNEGO DLA WĄTKU ---
-    std::string filename = "output_thread_" + std::to_string(thread_id) + ".csv";
+    // 1. Definiujemy ścieżkę do folderu
+    std::string folder_path = "D:\\Pulpit\\PWR\\algorytmy optymalizacji\\data_output";
+
+    // 2. (Opcjonalnie) Automatyczne tworzenie folderu, jeśli nie istnieje
+    std::filesystem::create_directories(folder_path);
+
+    // 3. Łączymy ścieżkę z nazwą pliku
+    std::string filename = folder_path + "\\output_thread_" + std::to_string(thread_id) + ".csv";
+
+    // 4. Zapis do pliku
     std::ofstream file(filename);
-    file << "Iteration,Cost,Temperature\n";
-    for (size_t i = 0; i < cost_history.size(); ++i) {
-        file << i << "," << cost_history[i] << "," << temp_history[i] << "\n";
+    if (file.is_open()) {
+        file << "Iteration,Cost,Temperature\n";
+        for (size_t i = 0; i < cost_history.size(); ++i) {
+            file << i << "," << cost_history[i] << "," << temp_history[i] << "\n";
+        }
+        file.close();
+    } else {
+        // Używamy locka, żeby cout się nie "rozjechał" przy błędzie
+        std::lock_guard<std::mutex> lock(result_mutex);
+        std::cerr << "BŁĄD: Nie można otworzyć pliku do zapisu: " << filename << std::endl;
     }
-    file.close();
 
     // Koniec wylicznia wartosc zatem przechodzimy do zpaisu do mutexu
     std::lock_guard<std::mutex> lock(result_mutex);

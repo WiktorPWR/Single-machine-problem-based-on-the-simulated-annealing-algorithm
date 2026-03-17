@@ -1,3 +1,5 @@
+//g++ .\source\main.cpp .\source\simulated_annealing.cpp .\source\task.cpp .\source\task_generator.cpp .\source\thread_function.cpp -o main -I.\header
+
 #include "main.h"   
 
 const int NUM_TASKS = 100;

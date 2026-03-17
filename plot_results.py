@@ -3,7 +3,8 @@ import matplotlib.pyplot as plt
 import glob
 
 # Szukamy wszystkich plików wygenerowanych przez wątki
-files = glob.glob('output_thread_*.csv')
+path = r'D:\Pulpit\PWR\algorytmy optymalizacji\data_output\output_thread_*.csv'
+files = glob.glob(path)
 
 if not files:
     print("Brak plików danych. Uruchom program w C++.")
