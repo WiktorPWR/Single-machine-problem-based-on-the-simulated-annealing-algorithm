@@ -1,0 +1,10 @@
+# Folder kompilacji CMake
+build/
+
+# Pliki wykonywalne (Windows)
+*.exe
+*.pdb
+
+# Opcjonalnie: pliki VS Code i logi
+.vscode/
+*.log
