@@ -22,15 +22,22 @@ int main() {
 
     // --- LOGOWANIE DANYCH ---
     std::vector<int> cost_history; 
+    std::vector<double> temp_history; // Nowy wektor na temperaturę
+    
     cost_history.push_back(best_cost);
+    temp_history.push_back(INITIAL_TEMPERATURE);
     // ------------------------
 
     double T = INITIAL_TEMPERATURE; 
     double T_min = MIN_TEMPERATURE; 
 
+    int reheat_counter = 0; // Licznik użyć podgrzewania
+
     while (T > T_min) {
+        int accepted = 0;
         for (int iteration = 0; iteration < MAX_ITERATIONS; ++iteration) {
-            std::vector<Task> neighbor_solution = generate_neighbor(best_solution);
+
+            std::vector<Task> neighbor_solution = generate_neighbor(best_solution, T);
             int neighbor_cost = evaluate_solution(neighbor_solution);
 
             int delta = neighbor_cost - best_cost;
@@ -38,27 +45,63 @@ int main() {
             if (delta < 0) {
                 best_solution = neighbor_solution;
                 best_cost = neighbor_cost;
+
+                accepted++;
+
             } else {
                 double p_accept = exp(-delta / T);
                 if (((double)rand() / RAND_MAX) < p_accept) {
                     best_solution = neighbor_solution;
                     best_cost = neighbor_cost;
+                    accepted++;
                 }
+
             }
-            // Zapisujemy koszt po każdej iteracji wewnętrznej
+
+            
+            // Zapisujemy oba parametry
             cost_history.push_back(best_cost);
+            temp_history.push_back(T);
         }
-        T *= COOLING_RATE;
+
+        double acceptance_rate = (double)accepted / MAX_ITERATIONS;
+
+        if (acceptance_rate == 0) {
+            // Reheating z podwójnym zabezpieczeniem
+            if (reheat_counter < MAX_REHEAT_COUNT && T * REHEAT_FACTOR < MAX_T_LIMIT) {
+                T *= REHEAT_FACTOR;
+                reheat_counter++;
+                std::cout << "Reheating! Proba: " << reheat_counter << " Nowa Temp: " << T << std::endl;
+            } else {
+                // Jeśli wykorzystaliśmy limity, wymuszamy normalne chłodzenie, 
+                // żeby algorytm kiedyś się skończył
+                T *= COOLING_RATE_NORMAL; 
+            }
+        } 
+        else if (acceptance_rate < 0.4) {
+            T *= COOLING_RATE_SLOW;
+        } 
+        else if (acceptance_rate > 0.6) {
+            T *= COOLING_RATE_FAST;
+        } 
+        else {
+            T *= COOLING_RATE_NORMAL;
+        }
+
+        // Opcjonalnie: Jeśli T spadnie ekstremalnie nisko po wielu próbach, a wciąż podgrzewamy
+        if (reheat_counter >= MAX_REHEAT_COUNT && T < T_min * 1.1) {
+             break; // Wyjście awaryjne
+        }
     }
 
     // --- ZAPIS DO PLIKU CSV ---
     std::ofstream file("D:\\Pulpit\\PWR\\algorytmy optymalizacji\\output_data.csv");
-    file << "Iteration,Cost\n";
+    file << "Iteration,Cost,Temperature\n"; // Nagłówek z 3 kolumnami
     for (size_t i = 0; i < cost_history.size(); ++i) {
-        file << i << "," << cost_history[i] << "\n";
+        file << i << "," << cost_history[i] << "," << temp_history[i] << "\n";
     }
     file.close();
-    std::cout << "Dane zapisane do output_data.csv. Mozesz teraz wygenerowac wykres." << std::endl;
-
+    
+    std::cout << "Dane zapisane. Mozesz teraz wygenerowac dwa wykresy." << std::endl;
     return 0;
 }
