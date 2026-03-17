@@ -1,16 +1,23 @@
 #include "thread_function.h"
+#include <random>
+
 
 void thread_simulated_annealing_function(std::vector<Task>& tasks,int thread_id) {
     
+    // 1. Tworzymy unikalny generator dla tego konkretnego wątku
+    // Używamy thread_id oraz czasu, żeby ziarno było na pewno inne
+    std::mt19937 gen(std::chrono::system_clock::now().time_since_epoch().count() + thread_id);
+    std::uniform_real_distribution<double> dis(0.0, 1.0);
+    std::uniform_int_distribution<int> task_dis(0, tasks.size() - 1);
+
+
     std::vector<Task> best_solution = tasks;
     int best_cost = evaluate_solution(best_solution);
 
     // --- LOGOWANIE DANYCH ---
     std::vector<int> cost_history; 
     std::vector<double> temp_history; // Nowy wektor na temperaturę
-    
-    cost_history.push_back(best_cost);
-    temp_history.push_back(INITIAL_TEMPERATURE);
+
     // ------------------------
 
     double T = INITIAL_TEMPERATURE; 
@@ -35,12 +42,15 @@ void thread_simulated_annealing_function(std::vector<Task>& tasks,int thread_id)
 
             } else {
                 double p_accept = exp(-delta / T);
-                if (((double)rand() / RAND_MAX) < p_accept) {
+                if (dis(gen) < p_accept) { 
                     best_solution = neighbor_solution;
                     best_cost = neighbor_cost;
                     accepted++;
                 }
             }
+            // LOGOWANIE KAŻDEJ ITERACJI WEWNĘTRZNEJ
+            cost_history.push_back(best_cost);
+            temp_history.push_back(T);
         }
 
         double acceptance_rate = (double)accepted / MAX_ITERATIONS;
@@ -71,6 +81,15 @@ void thread_simulated_annealing_function(std::vector<Task>& tasks,int thread_id)
              break; // Wyjście awaryjne
         }
     }
+
+    // --- ZAPIS DO PLIKU INDYWIDUALNEGO DLA WĄTKU ---
+    std::string filename = "output_thread_" + std::to_string(thread_id) + ".csv";
+    std::ofstream file(filename);
+    file << "Iteration,Cost,Temperature\n";
+    for (size_t i = 0; i < cost_history.size(); ++i) {
+        file << i << "," << cost_history[i] << "," << temp_history[i] << "\n";
+    }
+    file.close();
 
     // Koniec wylicznia wartosc zatem przechodzimy do zpaisu do mutexu
     std::lock_guard<std::mutex> lock(result_mutex);
