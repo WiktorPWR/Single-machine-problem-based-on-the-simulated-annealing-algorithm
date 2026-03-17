@@ -1,6 +1,8 @@
 #include "thread_function.h"
 #include <random>
 #include <filesystem>
+#include <string>  // To naprawi błąd 'to_string' i operator '+'
+#include <fstream> // To pozwoli na zapis do pliku (ofstream)
 
 void thread_simulated_annealing_function(std::vector<Task>& tasks,int thread_id) {
     
