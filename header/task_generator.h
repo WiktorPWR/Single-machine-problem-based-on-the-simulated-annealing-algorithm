@@ -1,9 +1,8 @@
 #ifndef TASK_GENERATOR_H
 # define TASK_GENERATOR_H
 
-#include "task.h"
+#include "task.h"  // To mówi kompilatorowi, czym jest Task
 #include <vector>
-
 
 class TaskGenerator {
 public:

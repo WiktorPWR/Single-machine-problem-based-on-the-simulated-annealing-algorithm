@@ -5,13 +5,23 @@
 int evaluate_solution(std::vector<Task>& tasks) {
     int total_cost = 0;
     int current_time = 0;
-
+ 
     for (auto& task : tasks) {
+        // Czekamy aż zadanie będzie gotowe do wykonania
         current_time = std::max(current_time, task.release_time);
+ 
+        // Przezbrojenie maszyny pod nowe zadanie
+        current_time += task.setup_time;
+ 
+        // Wykonanie zadania
         current_time += task.task_duration;
-
+ 
+        // Spóźnienie liczymy po wykonaniu, przed cleanup
         int lateness = std::max(0, current_time - task.due_time);
         total_cost += task.task_priority * lateness;
+ 
+        // Sprzątanie po zadaniu (nie wpływa na lateness)
+        current_time += task.cleanup_time;
     }
     return total_cost;
 }
