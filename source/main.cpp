@@ -3,12 +3,7 @@
 #include "main.h"   
 
 const int NUM_TASKS = 100;
-const int MAX_DURATION = 100;
-const int MAX_PRIORITY = 10;
-const int MAX_DUE_TIME = 100;
-const int MAX_RELEASE_TIME = 100;
-
-const int NUM_THREADS = 4; // Liczba wątków do uruchomienia
+const int NUM_THREADS = 10;
 
 std::mutex result_mutex; 
 std::vector<int> best_costs;
