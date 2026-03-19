@@ -1,6 +1,8 @@
 # Folder kompilacji CMake
 build/
-
+data_output/
+results/
+wykresy/
 # Pliki wykonywalne (Windows)
 *.exe
 *.pdb
