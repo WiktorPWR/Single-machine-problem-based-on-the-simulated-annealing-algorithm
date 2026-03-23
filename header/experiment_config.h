@@ -220,6 +220,7 @@ inline std::vector<ExperimentParams> build_all_experiments() {
         for (auto& v : variants) {
             auto p = make_default();
             p.category                = "3_setup_times";
+            p.initial_temperature       = 100.0;
             p.pct_small               = 0.33;
             p.pct_medium              = 0.34;
             p.pct_large               = 0.33;
