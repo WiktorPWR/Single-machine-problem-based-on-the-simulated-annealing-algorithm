@@ -2,6 +2,7 @@
 #define EXPERIMENT_RUNNER_H
 
 #include "experiment_config.h"
+#include "config.h"
 #include "task.h"
 #include "task_generator.h"
 #include "simulated_annealing.h"
@@ -20,21 +21,16 @@
 // Jeśli pct_small=pct_medium=pct_large=0 → zachowanie losowe (oryginalne).
 static std::vector<Task> generate_tasks_typed(const ExperimentParams& p, unsigned seed) {
     std::mt19937 rng(seed);
-    std::uniform_int_distribution<int> dur_dist(1, MAX_DURATION);
     std::uniform_int_distribution<int> pri_dist(1, MAX_PRIORITY);
     std::uniform_int_distribution<int> due_dist(1, MAX_DUE_TIME);
     std::uniform_int_distribution<int> rel_dist(1, MAX_RELEASE_TIME);
 
-    bool typed = (p.pct_small + p.pct_medium + p.pct_large) > 0.001;
+    bool typed  = (p.pct_small + p.pct_medium + p.pct_large) > 0.001;
+    bool budget = (p.total_duration_budget > 0);
 
-    // Progi czasu trwania (zgodne z task.cpp)
+    // Progi duration (zgodne z task.cpp)
     const int MEDIUM_THRESH = (int)(MAX_DURATION * 0.5);  // >= 50
     const int LARGE_THRESH  = (int)(MAX_DURATION * 0.8);  // >= 80
-
-    // Przedziały duration dla każdego typu
-    std::uniform_int_distribution<int> dur_small (1, MEDIUM_THRESH - 1);
-    std::uniform_int_distribution<int> dur_medium(MEDIUM_THRESH, LARGE_THRESH - 1);
-    std::uniform_int_distribution<int> dur_large (LARGE_THRESH,  MAX_DURATION);
 
     int n_small  = typed ? (int)std::round(p.pct_small  * p.num_tasks) : 0;
     int n_medium = typed ? (int)std::round(p.pct_medium * p.num_tasks) : 0;
@@ -44,24 +40,73 @@ static std::vector<Task> generate_tasks_typed(const ExperimentParams& p, unsigne
     tasks.reserve(p.num_tasks);
 
     if (!typed) {
-        // oryginalne losowe
-        for (int i = 0; i < p.num_tasks; ++i) {
-            tasks.emplace_back(i,
-                dur_dist(rng), pri_dist(rng),
-                due_dist(rng), rel_dist(rng));
-        }
-    } else {
+        // ---- oryginalne losowe (bez budżetu) ----
+        std::uniform_int_distribution<int> dur_dist(1, MAX_DURATION);
+        for (int i = 0; i < p.num_tasks; ++i)
+            tasks.emplace_back(i, dur_dist(rng), pri_dist(rng),
+                               due_dist(rng), rel_dist(rng));
+        return tasks;
+    }
+
+    if (!budget) {
+        // ---- typed bez budżetu ----
+        std::uniform_int_distribution<int> dur_small (1, MEDIUM_THRESH - 1);
+        std::uniform_int_distribution<int> dur_medium(MEDIUM_THRESH, LARGE_THRESH - 1);
+        std::uniform_int_distribution<int> dur_large (LARGE_THRESH,  MAX_DURATION);
         int id = 0;
-        for (int i = 0; i < n_small; ++i, ++id)
-            tasks.emplace_back(id, dur_small(rng), pri_dist(rng), due_dist(rng), rel_dist(rng));
+        for (int i = 0; i < n_small;  ++i, ++id)
+            tasks.emplace_back(id, dur_small(rng),  pri_dist(rng), due_dist(rng), rel_dist(rng));
         for (int i = 0; i < n_medium; ++i, ++id)
             tasks.emplace_back(id, dur_medium(rng), pri_dist(rng), due_dist(rng), rel_dist(rng));
-        for (int i = 0; i < n_large; ++i, ++id)
-            tasks.emplace_back(id, dur_large(rng), pri_dist(rng), due_dist(rng), rel_dist(rng));
-
-        // tasemix – przetasuj żeby kolejność typów była losowa
+        for (int i = 0; i < n_large;  ++i, ++id)
+            tasks.emplace_back(id, dur_large(rng),  pri_dist(rng), due_dist(rng), rel_dist(rng));
         std::shuffle(tasks.begin(), tasks.end(), rng);
+        return tasks;
     }
+
+    // ──────────────────────────────────────────────────────────
+    //  typed + budżet: suma duration == total_duration_budget
+    // ──────────────────────────────────────────────────────────
+    int budget_small  = (int)std::round(p.pct_small  * p.total_duration_budget);
+    int budget_medium = (int)std::round(p.pct_medium * p.total_duration_budget);
+    int budget_large  = p.total_duration_budget - budget_small - budget_medium;
+
+    auto gen_group = [&](int n, int typ_budget, int dur_min, int dur_max,
+                         int start_id) -> std::vector<Task>
+    {
+        std::vector<Task> group;
+        if (n == 0) return group;
+
+        std::uniform_int_distribution<int> d(dur_min, dur_max);
+        std::vector<int> durations(n);
+        int raw_sum = 0;
+        for (int i = 0; i < n; ++i) { durations[i] = d(rng); raw_sum += durations[i]; }
+
+        int assigned = 0;
+        for (int i = 0; i < n - 1; ++i) {
+            int scaled = (int)std::round((double)durations[i] / raw_sum * typ_budget);
+            scaled = std::max(dur_min, std::min(dur_max, scaled));
+            durations[i] = scaled;
+            assigned += scaled;
+        }
+        int last = std::max(dur_min, std::min(dur_max, typ_budget - assigned));
+        durations[n - 1] = last;
+
+        for (int i = 0; i < n; ++i)
+            group.emplace_back(start_id + i, durations[i],
+                               pri_dist(rng), due_dist(rng), rel_dist(rng));
+        return group;
+    };
+
+    auto g_small  = gen_group(n_small,  budget_small,  1,             MEDIUM_THRESH - 1, 0);
+    auto g_medium = gen_group(n_medium, budget_medium, MEDIUM_THRESH, LARGE_THRESH  - 1, n_small);
+    auto g_large  = gen_group(n_large,  budget_large,  LARGE_THRESH,  MAX_DURATION,      n_small + n_medium);
+
+    for (auto& t : g_small)  tasks.push_back(t);
+    for (auto& t : g_medium) tasks.push_back(t);
+    for (auto& t : g_large)  tasks.push_back(t);
+
+    std::shuffle(tasks.begin(), tasks.end(), rng);
     return tasks;
 }
 
@@ -72,6 +117,15 @@ inline void run_experiment(const ExperimentParams& cfg,
                            const std::string& base_output_dir,
                            unsigned seed = 42)
 {
+    // ── Ustaw globalną macierz przezbrojenia PRZED generowaniem zadań ──
+    // Kategoria 3_setup_times: używa niestandardowej macierzy z cfg.setup_matrix
+    // Wszystkie inne kategorie: macierz domyślna z config.h (per-typ, bez różnicowania celu)
+    if (cfg.use_custom_setup_matrix) {
+        SETUP_MATRIX = cfg.setup_matrix;
+    } else {
+        reset_setup_matrix();
+    }
+
     // ---- generuj zadania ----
     std::vector<Task> tasks = generate_tasks_typed(cfg, seed);
 
@@ -79,7 +133,7 @@ inline void run_experiment(const ExperimentParams& cfg,
     std::mt19937 gen(seed + 1337);
     std::uniform_real_distribution<double> dis(0.0, 1.0);
 
-    std::vector<Task> best_solution  = tasks;
+    std::vector<Task> best_solution    = tasks;
     std::vector<Task> current_solution = tasks;
     int best_cost    = evaluate_solution(best_solution);
     int current_cost = best_cost;
@@ -98,8 +152,8 @@ inline void run_experiment(const ExperimentParams& cfg,
         return;
     }
 
-    int    reheat_counter = 0;
-    long long total_iterations = 0;
+    int    reheat_counter    = 0;
+    long long total_iterations  = 0;
     long long no_improve_streak = 0;
 
     const auto time_limit = std::chrono::seconds(cfg.time_limit_seconds);
@@ -111,15 +165,12 @@ inline void run_experiment(const ExperimentParams& cfg,
     bool stop = false;
     while (!stop && T > T_min) {
 
-        // Warunek stopu: czas
         auto elapsed = std::chrono::steady_clock::now() - start_time;
         if (elapsed >= time_limit) break;
 
-        // Warunek stopu: twarda liczba iteracji (gdy stop_condition=="iterations")
         if (cfg.stop_condition == "iterations" &&
             total_iterations >= cfg.max_total_iterations) break;
 
-        // Globalne zabezpieczenie
         if (total_iterations >= cfg.max_total_iterations) break;
 
         int accepted = 0;
@@ -150,13 +201,11 @@ inline void run_experiment(const ExperimentParams& cfg,
                 }
             }
 
-            // Warunek stopu: brak poprawy
             if (cfg.stop_condition == "no_improve" &&
                 no_improve_streak >= cfg.no_improve_limit) {
                 stop = true;
             }
 
-            // logowanie co 100 iteracji
             if (total_iterations % 100 == 0) {
                 iter_history.push_back(total_iterations);
                 cost_history.push_back(best_cost);
@@ -185,7 +234,6 @@ inline void run_experiment(const ExperimentParams& cfg,
                 T *= cfg.cooling_rate_normal;
             }
         } else {
-            // stały cooling rate
             if (cfg.enable_reheat &&
                 acceptance_rate == 0.0 &&
                 reheat_counter < cfg.max_reheat_count &&
@@ -199,7 +247,6 @@ inline void run_experiment(const ExperimentParams& cfg,
 
         if (T <= 0.0 || !std::isfinite(T)) break;
 
-        // Wczesne zakończenie gdy reheaty wyczerpane i T spada poniżej T_min*1.1
         if (cfg.enable_reheat &&
             reheat_counter >= cfg.max_reheat_count &&
             T < T_min * 1.1) break;
@@ -236,8 +283,17 @@ inline void run_experiment(const ExperimentParams& cfg,
     file << "# T_final="    << T                    << "\n";
     file << "# num_tasks="  << cfg.num_tasks        << "\n";
     file << "# stop_cond="  << cfg.stop_condition   << "\n";
-    file << "Iteration,Cost,Temperature\n";
 
+    // Zapisz macierz przezbrojenia użytą w tym eksperymencie
+    if (cfg.use_custom_setup_matrix) {
+        file << "# setup_matrix=";
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c)
+                file << cfg.setup_matrix[r][c] << (r==2 && c==2 ? "" : ",");
+        file << "\n";
+    }
+
+    file << "Iteration,Cost,Temperature\n";
     for (size_t i = 0; i < cost_history.size(); ++i) {
         file << iter_history[i] << ","
              << cost_history[i] << ","
