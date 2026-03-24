@@ -16,9 +16,18 @@
 #include <random>
 #include <cmath>
 #include <algorithm>
+#include <numeric>
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  Liczba powtórzeń każdego eksperymentu (100 runów, ten sam zbiór zadań,
+//  różne seedy dla generatora losowości SA).
+// ──────────────────────────────────────────────────────────────────────────────
+static constexpr int NUM_RUNS = 100;
 
 // Generuje zadania wg procentów typów zdefiniowanych w ExperimentParams.
 // Jeśli pct_small=pct_medium=pct_large=0 → zachowanie losowe (oryginalne).
+// seed jest STAŁY dla każdego eksperymentu – wszystkie 100 runów dostają ten sam
+// zbiór zadań.
 static std::vector<Task> generate_tasks_typed(const ExperimentParams& p, unsigned seed) {
     std::mt19937 rng(seed);
     std::uniform_int_distribution<int> pri_dist(1, MAX_PRIORITY);
@@ -40,7 +49,6 @@ static std::vector<Task> generate_tasks_typed(const ExperimentParams& p, unsigne
     tasks.reserve(p.num_tasks);
 
     if (!typed) {
-        // ---- oryginalne losowe (bez budżetu) ----
         std::uniform_int_distribution<int> dur_dist(1, MAX_DURATION);
         for (int i = 0; i < p.num_tasks; ++i)
             tasks.emplace_back(i, dur_dist(rng), pri_dist(rng),
@@ -49,7 +57,6 @@ static std::vector<Task> generate_tasks_typed(const ExperimentParams& p, unsigne
     }
 
     if (!budget) {
-        // ---- typed bez budżetu ----
         std::uniform_int_distribution<int> dur_small (1, MEDIUM_THRESH - 1);
         std::uniform_int_distribution<int> dur_medium(MEDIUM_THRESH, LARGE_THRESH - 1);
         std::uniform_int_distribution<int> dur_large (LARGE_THRESH,  MAX_DURATION);
@@ -64,9 +71,7 @@ static std::vector<Task> generate_tasks_typed(const ExperimentParams& p, unsigne
         return tasks;
     }
 
-    // ──────────────────────────────────────────────────────────
-    //  typed + budżet: suma duration == total_duration_budget
-    // ──────────────────────────────────────────────────────────
+    // typed + budżet
     int budget_small  = (int)std::round(p.pct_small  * p.total_duration_budget);
     int budget_medium = (int)std::round(p.pct_medium * p.total_duration_budget);
     int budget_large  = p.total_duration_budget - budget_small - budget_medium;
@@ -111,26 +116,27 @@ static std::vector<Task> generate_tasks_typed(const ExperimentParams& p, unsigne
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-//  Główna funkcja uruchamiająca jeden eksperyment i zapisująca CSV
+//  Pojedynczy run SA – zwraca historię (iteration, cost, temperature)
+//  sampled co 100 iteracji.
+//
+//  tasks       – STAŁY zbiór zadań (ten sam dla wszystkich runów)
+//  cfg         – parametry eksperymentu
+//  sa_seed     – seed wyłącznie dla generatora losowości SA (różny dla każdego runu)
 // ──────────────────────────────────────────────────────────────────────────────
-inline void run_experiment(const ExperimentParams& cfg,
-                           const std::string& base_output_dir,
-                           unsigned seed = 42)
+struct RunResult {
+    std::vector<long long> iter_history;
+    std::vector<double>    cost_history;   // double żeby umożliwić uśrednianie
+    std::vector<double>    temp_history;
+    int    best_cost;
+    long long total_iterations;
+    double T_final;
+};
+
+static RunResult run_single(const std::vector<Task>& tasks,
+                             const ExperimentParams&  cfg,
+                             unsigned                 sa_seed)
 {
-    // ── Ustaw globalną macierz przezbrojenia PRZED generowaniem zadań ──
-    // Kategoria 3_setup_times: używa niestandardowej macierzy z cfg.setup_matrix
-    // Wszystkie inne kategorie: macierz domyślna z config.h (per-typ, bez różnicowania celu)
-    if (cfg.use_custom_setup_matrix) {
-        SETUP_MATRIX = cfg.setup_matrix;
-    } else {
-        reset_setup_matrix();
-    }
-
-    // ---- generuj zadania ----
-    std::vector<Task> tasks = generate_tasks_typed(cfg, seed);
-
-    // ---- inicjalizacja SA ----
-    std::mt19937 gen(seed + 1337);
+    std::mt19937 gen(sa_seed);
     std::uniform_real_distribution<double> dis(0.0, 1.0);
 
     std::vector<Task> best_solution    = tasks;
@@ -138,19 +144,9 @@ inline void run_experiment(const ExperimentParams& cfg,
     int best_cost    = evaluate_solution(best_solution);
     int current_cost = best_cost;
 
-    std::vector<long long> iter_history;
-    std::vector<int>       cost_history;
-    std::vector<double>    temp_history;
-
+    RunResult res;
     double T     = cfg.initial_temperature;
     double T_min = cfg.min_temperature;
-
-    if (T <= 0.0 || T_min <= 0.0 || T_min >= T) {
-        std::cerr << "[WARN] Eksperyment " << cfg.experiment_name
-                  << ": nieprawidłowa konfiguracja temperatury T=" << T
-                  << " T_min=" << T_min << " – pomijam.\n";
-        return;
-    }
 
     int    reheat_counter    = 0;
     long long total_iterations  = 0;
@@ -161,7 +157,6 @@ inline void run_experiment(const ExperimentParams& cfg,
 
     double max_t_limit = cfg.initial_temperature * cfg.max_t_limit_multiplier;
 
-    // ---- pętla główna SA ----
     bool stop = false;
     while (!stop && T > T_min) {
 
@@ -207,9 +202,9 @@ inline void run_experiment(const ExperimentParams& cfg,
             }
 
             if (total_iterations % 100 == 0) {
-                iter_history.push_back(total_iterations);
-                cost_history.push_back(best_cost);
-                temp_history.push_back(T);
+                res.iter_history.push_back(total_iterations);
+                res.cost_history.push_back(static_cast<double>(best_cost));
+                res.temp_history.push_back(T);
             }
         }
 
@@ -252,19 +247,177 @@ inline void run_experiment(const ExperimentParams& cfg,
             T < T_min * 1.1) break;
     }
 
-    // ---- zapisz ostatni punkt ----
-    iter_history.push_back(total_iterations);
-    cost_history.push_back(best_cost);
-    temp_history.push_back(T);
+    // ostatni punkt
+    res.iter_history.push_back(total_iterations);
+    res.cost_history.push_back(static_cast<double>(best_cost));
+    res.temp_history.push_back(T);
 
-    // ---- wypisz podsumowanie ----
+    res.best_cost        = best_cost;
+    res.total_iterations = total_iterations;
+    res.T_final          = T;
+    return res;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  Uśrednianie RunResult-ów
+//
+//  Różne runy mogą mieć różną długość historii (różne warunki stopu).
+//  Strategia: interpolacja liniowa – dla każdego punktu siatki wynikowej
+//  wyznaczamy wartość z każdego runu metodą last-value-carry-forward
+//  (wartość jest najlepszym kosztem do tej pory, więc jest nierosnąca).
+//
+//  Siatka: zbiór union wszystkich iter_history ze wszystkich runów,
+//  ograniczony do max 2000 punktów (decymacja).
+// ──────────────────────────────────────────────────────────────────────────────
+struct AveragedResult {
+    std::vector<long long> iter_grid;
+    std::vector<double>    avg_cost;
+    std::vector<double>    std_cost;
+    std::vector<double>    avg_temp;
+    int    avg_best_cost;    // średni best_cost po zakończeniu wszystkich runów
+    double std_best_cost;
+    long long avg_total_iter;
+};
+
+static AveragedResult average_runs(const std::vector<RunResult>& runs)
+{
+    // 1. Zbierz wszystkie punkty siatki (iter_history ze wszystkich runów)
+    std::vector<long long> all_iters;
+    for (auto& r : runs)
+        for (auto v : r.iter_history)
+            all_iters.push_back(v);
+
+    std::sort(all_iters.begin(), all_iters.end());
+    all_iters.erase(std::unique(all_iters.begin(), all_iters.end()), all_iters.end());
+
+    // Decymacja do maks. 2000 punktów
+    const size_t MAX_GRID = 2000;
+    std::vector<long long> grid;
+    if (all_iters.size() <= MAX_GRID) {
+        grid = all_iters;
+    } else {
+        double step = static_cast<double>(all_iters.size() - 1) / (MAX_GRID - 1);
+        for (size_t i = 0; i < MAX_GRID; ++i)
+            grid.push_back(all_iters[static_cast<size_t>(std::round(i * step))]);
+        // upewnij się że ostatni punkt jest włączony
+        grid.back() = all_iters.back();
+    }
+
+    // 2. Dla każdego punktu siatki interpoluj wartości z każdego runu
+    //    (last-value-carry-forward)
+    size_t G = grid.size();
+    std::vector<double> sum_cost(G, 0.0), sum_sq_cost(G, 0.0), sum_temp(G, 0.0);
+
+    for (auto& r : runs) {
+        for (size_t gi = 0; gi < G; ++gi) {
+            long long query = grid[gi];
+            // znajdź ostatni indeks w r.iter_history <= query
+            auto it = std::upper_bound(r.iter_history.begin(),
+                                        r.iter_history.end(), query);
+            double cost, temp;
+            if (it == r.iter_history.begin()) {
+                // przed pierwszym punktem → użyj pierwszego punktu
+                cost = r.cost_history.front();
+                temp = r.temp_history.front();
+            } else {
+                --it;
+                size_t idx = static_cast<size_t>(std::distance(r.iter_history.begin(), it));
+                cost = r.cost_history[idx];
+                temp = r.temp_history[idx];
+            }
+            sum_cost[gi]    += cost;
+            sum_sq_cost[gi] += cost * cost;
+            sum_temp[gi]    += temp;
+        }
+    }
+
+    double n = static_cast<double>(runs.size());
+    AveragedResult avg;
+    avg.iter_grid.resize(G);
+    avg.avg_cost.resize(G);
+    avg.std_cost.resize(G);
+    avg.avg_temp.resize(G);
+
+    for (size_t gi = 0; gi < G; ++gi) {
+        avg.iter_grid[gi] = grid[gi];
+        avg.avg_cost[gi]  = sum_cost[gi]  / n;
+        avg.avg_temp[gi]  = sum_temp[gi]  / n;
+        double variance   = (sum_sq_cost[gi] / n) - (avg.avg_cost[gi] * avg.avg_cost[gi]);
+        avg.std_cost[gi]  = std::sqrt(std::max(0.0, variance));
+    }
+
+    // 3. Statystyki końcowego best_cost
+    double sum_bc = 0.0, sum_sq_bc = 0.0;
+    long long sum_iter = 0;
+    for (auto& r : runs) {
+        sum_bc    += r.best_cost;
+        sum_sq_bc += static_cast<double>(r.best_cost) * r.best_cost;
+        sum_iter  += r.total_iterations;
+    }
+    avg.avg_best_cost  = static_cast<int>(std::round(sum_bc / n));
+    double var_bc      = (sum_sq_bc / n) - (sum_bc / n) * (sum_bc / n);
+    avg.std_best_cost  = std::sqrt(std::max(0.0, var_bc));
+    avg.avg_total_iter = sum_iter / static_cast<long long>(runs.size());
+
+    return avg;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  Główna funkcja uruchamiająca NUM_RUNS runów i zapisująca uśredniony CSV
+//
+//  Nazwa pliku CSV = bez zmian (cfg.experiment_name + ".csv")
+//  Format CSV = rozszerzony o kolumny Std_Cost (odchylenie std.) dla każdego
+//  punktu na krzywej.
+// ──────────────────────────────────────────────────────────────────────────────
+inline void run_experiment(const ExperimentParams& cfg,
+                           const std::string& base_output_dir,
+                           unsigned seed = 42)
+{
+    // ── Ustaw globalną macierz przezbrojenia ──
+    if (cfg.use_custom_setup_matrix) {
+        SETUP_MATRIX = cfg.setup_matrix;
+    } else {
+        reset_setup_matrix();
+    }
+
+    // ── Generuj JEDEN zestaw zadań (stały seed → ten sam zbiór dla wszystkich runów) ──
+    const std::vector<Task> fixed_tasks = generate_tasks_typed(cfg, seed);
+
+    if (cfg.initial_temperature <= 0.0 ||
+        cfg.min_temperature     <= 0.0 ||
+        cfg.min_temperature     >= cfg.initial_temperature) {
+        std::cerr << "[WARN] Eksperyment " << cfg.experiment_name
+                  << ": nieprawidłowa konfiguracja temperatury T="
+                  << cfg.initial_temperature
+                  << " T_min=" << cfg.min_temperature << " – pomijam.\n";
+        return;
+    }
+
+    // ── Uruchom NUM_RUNS runów SA (każdy z innym seedem losowości SA) ──
+    std::vector<RunResult> runs;
+    runs.reserve(NUM_RUNS);
+
     std::cout << "  [" << cfg.category << "/" << cfg.experiment_name << "]"
-              << "  koszt=" << best_cost
-              << "  iter=" << total_iterations
-              << "  T_final=" << T
+              << "  uruchamiam " << NUM_RUNS << " runów...\n";
+
+    for (int run_idx = 0; run_idx < NUM_RUNS; ++run_idx) {
+        // seed SA = seed + 1337 + run_idx * 999983 (duże przesunięcia dla niezależności)
+        unsigned sa_seed = seed + 1337u + static_cast<unsigned>(run_idx) * 999983u;
+        runs.push_back(run_single(fixed_tasks, cfg, sa_seed));
+    }
+
+    // ── Uśrednij wyniki ──
+    AveragedResult avg = average_runs(runs);
+
+    // ── Wypisz podsumowanie ──
+    std::cout << "  [" << cfg.category << "/" << cfg.experiment_name << "]"
+              << "  avg_best_cost=" << avg.avg_best_cost
+              << "  ±" << static_cast<int>(std::round(avg.std_best_cost))
+              << "  avg_iter=" << avg.avg_total_iter
+              << "  T_final(avg)=" << avg.avg_temp.back()
               << "\n";
 
-    // ---- zapis CSV ----
+    // ── Zapis CSV (ta sama nazwa pliku co wcześniej) ──
     std::string folder = base_output_dir + "/" + cfg.category;
     std::filesystem::create_directories(folder);
     std::string filepath = folder + "/" + cfg.experiment_name + ".csv";
@@ -275,16 +428,17 @@ inline void run_experiment(const ExperimentParams& cfg,
         return;
     }
 
-    // Metadane jako komentarz w nagłówku
-    file << "# experiment=" << cfg.experiment_name << "\n";
-    file << "# category="   << cfg.category        << "\n";
-    file << "# best_cost="  << best_cost            << "\n";
-    file << "# total_iter=" << total_iterations     << "\n";
-    file << "# T_final="    << T                    << "\n";
-    file << "# num_tasks="  << cfg.num_tasks        << "\n";
-    file << "# stop_cond="  << cfg.stop_condition   << "\n";
+    // Metadane
+    file << "# experiment="     << cfg.experiment_name   << "\n";
+    file << "# category="       << cfg.category          << "\n";
+    file << "# num_runs="       << NUM_RUNS               << "\n";
+    file << "# avg_best_cost="  << avg.avg_best_cost      << "\n";
+    file << "# std_best_cost="  << avg.std_best_cost      << "\n";
+    file << "# avg_total_iter=" << avg.avg_total_iter     << "\n";
+    file << "# T_final_avg="    << avg.avg_temp.back()    << "\n";
+    file << "# num_tasks="      << cfg.num_tasks          << "\n";
+    file << "# stop_cond="      << cfg.stop_condition     << "\n";
 
-    // Zapisz macierz przezbrojenia użytą w tym eksperymencie
     if (cfg.use_custom_setup_matrix) {
         file << "# setup_matrix=";
         for (int r = 0; r < 3; ++r)
@@ -293,11 +447,13 @@ inline void run_experiment(const ExperimentParams& cfg,
         file << "\n";
     }
 
-    file << "Iteration,Cost,Temperature\n";
-    for (size_t i = 0; i < cost_history.size(); ++i) {
-        file << iter_history[i] << ","
-             << cost_history[i] << ","
-             << temp_history[i] << "\n";
+    // Nagłówek: uśredniona krzywa + odchylenie standardowe kosztu
+    file << "Iteration,Avg_Cost,Std_Cost,Avg_Temperature\n";
+    for (size_t i = 0; i < avg.iter_grid.size(); ++i) {
+        file << avg.iter_grid[i] << ","
+             << avg.avg_cost[i]  << ","
+             << avg.std_cost[i]  << ","
+             << avg.avg_temp[i]  << "\n";
     }
     file.close();
 }
